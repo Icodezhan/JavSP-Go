@@ -172,8 +172,11 @@ def check_update(allow_check=True, auto_update=True):
         print('=' * display_width)
         print('')
 
-    # 使用pyinstaller打包exe时生成hook，运行时由该hook将版本信息注入到sys中
-    local_version = meta.version('javsp')
+    # 源码运行或 cx_Freeze 打包后没有安装包元数据时，使用注入的版本号
+    try:
+        local_version = meta.version('javsp')
+    except meta.PackageNotFoundError:
+        local_version = getattr(sys, 'javsp_version', '1.8.0')
     if local_version == "":
         return
     # 检查更新

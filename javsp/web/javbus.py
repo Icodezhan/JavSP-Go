@@ -7,6 +7,7 @@ from javsp.web.exceptions import *
 from javsp.func import *
 from javsp.config import Cfg, CrawlerID
 from javsp.datatype import MovieInfo, GenreMap
+from javsp.web.mirrors import get_with_mirror_fallback
 
 
 logger = logging.getLogger(__name__)
@@ -17,14 +18,64 @@ if Cfg().network.proxy_server is not None:
 else:
     base_url = str(Cfg().network.proxy_free[CrawlerID.javbus])
 
+# JavBus 会按请求指纹决定是否返回“年龄验证”页：过旧的 UA、缺少 Accept-Language 时
+# 只发回验证页（表现为解析器报“文档为空”），而浏览器式请求头可以直接拿到影片页。
+JAVBUS_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+    'Upgrade-Insecure-Requests': '1',
+}
+# 万一仍然命中验证页，就按浏览器的方式提交一次年龄确认表单
+AGE_GATE_TITLE = 'Age Verification'
+AGE_GATE_FORM = {'Submit': '確認'}
+
+
+def new_request() -> Request:
+    """带浏览器请求头的会话；保留代理与 CookieCloud cookie 处理"""
+    request = Request()
+    request.headers.update(JAVBUS_HEADERS)
+    return request
+
+
+def is_age_gate(resp) -> bool:
+    """判断响应是否为 JavBus 的年龄验证页"""
+    return AGE_GATE_TITLE in (getattr(resp, 'text', '') or '')
+
+
+def confirm_age_verification(resp, request: Request | None = None):
+    """命中年龄验证页时提交确认表单；其它情况原样返回"""
+    if not is_age_gate(resp):
+        return resp
+    url = getattr(resp, 'url', '') or ''
+    if not url:
+        return resp
+    logger.info('JavBus 返回年龄验证页，正在提交年龄确认：%s', url)
+    confirmed = (request or new_request()).post(url, dict(AGE_GATE_FORM), delay_raise=True)
+    if is_age_gate(confirmed):
+        logger.warning('JavBus 年龄确认后仍是验证页，可能被站点风控拦截：%s', url)
+        return resp
+    return confirmed
+
 
 def parse_data(movie: MovieInfo):
     """从网页抓取并解析指定番号的数据
     Args:
         movie (MovieInfo): 要解析的影片信息，解析后的信息直接更新到此变量内
     """
-    url = f'{base_url}/{movie.dvdid}'
-    resp = request_get(url, delay_raise=True)
+    url = f'{base_url.rstrip("/")}/{movie.dvdid}'
+    request = new_request()
+    resp = get_with_mirror_fallback(request.get, url, base_url, permanent_url, delay_raise=True)
+    resp = confirm_age_verification(resp, request)
+    if resp.status_code in (401, 403, 429) or resp.status_code >= 500:
+        resp.raise_for_status()
+    page = getattr(resp, 'url', '') or url
+    body = getattr(resp, 'text', '') or ''
+    if not body.strip():
+        raise SiteBlocked(f'JavBus: 响应为空，可能是年龄验证页或站点拦截: {page}')
+    if is_age_gate(resp):
+        raise SiteBlocked(f'JavBus: 年龄确认后仍是验证页: {page}')
+    url = resp.url
     # 疑似JavBus检测到类似爬虫的行为时会要求登录，不过发现目前不需要登录也可以从重定向前的网页中提取信息
     if resp.history and resp.history[0].status_code == 302:
         html = resp2html(resp.history[0])

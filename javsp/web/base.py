@@ -15,6 +15,7 @@ from requests.models import Response
 
 
 from javsp.config import Cfg
+from javsp.cookiecloud import cookies_for_url
 from javsp.web.exceptions import *
 
 
@@ -62,6 +63,8 @@ class Request():
         def wrapper(*args, **kw):
             try:
                 return func(*args, **kw)
+            except requests.exceptions.SSLError:
+                raise
             except Exception as e:
                 logger.debug(f"无法通过CloudFlare检测: '{e}', 尝试退回常规的requests请求")
                 if func == self.scraper.get:
@@ -71,31 +74,34 @@ class Request():
         return wrapper
 
     def get(self, url, delay_raise=False):
+        cookies = {**cookies_for_url(url), **self.cookies}
         r = self.__get(url,
                       headers=self.headers,
                       proxies=self.proxies,
-                      cookies=self.cookies,
+                      cookies=cookies,
                       timeout=self.timeout)
         if not delay_raise:
             r.raise_for_status()
         return r
 
     def post(self, url, data, delay_raise=False):
+        cookies = {**cookies_for_url(url), **self.cookies}
         r = self.__post(url,
                       data=data,
                       headers=self.headers,
                       proxies=self.proxies,
-                      cookies=self.cookies,
+                      cookies=cookies,
                       timeout=self.timeout)
         if not delay_raise:
             r.raise_for_status()
         return r
 
     def head(self, url, delay_raise=True):
+        cookies = {**cookies_for_url(url), **self.cookies}
         r = self.__head(url,
                       headers=self.headers,
                       proxies=self.proxies,
-                      cookies=self.cookies,
+                      cookies=cookies,
                       timeout=self.timeout)
         if not delay_raise:
             r.raise_for_status()
@@ -119,7 +125,7 @@ def request_get(url, cookies={}, timeout=None, delay_raise=False):
     if timeout is None:
         timeout = Cfg().network.timeout.seconds
     
-    r = requests.get(url, headers=headers, proxies=read_proxy(), cookies=cookies, timeout=timeout)
+    r = requests.get(url, headers=headers, proxies=read_proxy(), cookies={**cookies_for_url(url), **cookies}, timeout=timeout)
     if not delay_raise:
         if r.status_code == 403 and b'>Just a moment...<' in r.content:
             raise SiteBlocked(f"403 Forbidden: 无法通过CloudFlare检测: {url}")
@@ -132,7 +138,7 @@ def request_post(url, data, cookies={}, timeout=None, delay_raise=False):
     """向指定url发送post请求"""
     if timeout is None:
         timeout = Cfg().network.timeout.seconds
-    r = requests.post(url, data=data, headers=headers, proxies=read_proxy(), cookies=cookies, timeout=timeout)
+    r = requests.post(url, data=data, headers=headers, proxies=read_proxy(), cookies={**cookies_for_url(url), **cookies}, timeout=timeout)
     if not delay_raise:
         r.raise_for_status()
     return r

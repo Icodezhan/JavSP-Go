@@ -15,12 +15,13 @@ scanner:
   # 哪些后缀的文件应当视为影片？
   filename_extensions: [.3gp, .avi, .f4v, .flv, .iso, .m2ts, .m4v, .mkv, .mov, .mp4, .mpeg, .rm, .rmvb, .ts, .vob, .webm, .wmv, .strm, .mpg]
   # 扫描影片文件时忽略指定的文件夹
-  ignored_folder_name_pattern: ['^\.', '^#recycle$', '^#整理完成$', '^#不要扫描$']
+  ignored_folder_name_pattern: ['^\.', '^#recycle$', '^#整理完成$', '^#手动整理$', '^#不要扫描$']
   # 匹配番号时忽略小于指定大小的文件
   # 格式要求：https://docs.pydantic.dev/2.0/usage/types/bytesize/
   minimum_size: 232MiB
   skip_nfo_dir: yes
-  manual: yes
+  # 识别出番号后是否逐个停下来确认。no 表示直接整理
+  manual: no
 ################################
 network:
   # 设置代理服务器地址，支持 http, socks5/socks5h 代理，比如'http://127.0.0.1:1080'
@@ -143,7 +144,7 @@ summarizer:
 
   extra_fanarts:
     # 是否下载剧照？
-    enabled: true
+    enabled: false
     # 间隔的两次封面爬取请求之间应该间隔多久
     scrap_interval: PT1.5S
 

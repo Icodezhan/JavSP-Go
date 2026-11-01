@@ -35,6 +35,35 @@ for handler in root_logger.handlers:
 logger = logging.getLogger('main')
 
 
+def _program_dir() -> str:
+    """程序所在目录。打包后不能用当前工作目录，扫描开始后工作目录会切到影片文件夹。"""
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(os.path.abspath(sys.executable))
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _setup_file_logging() -> None:
+    """把运行日志写到程序目录下的 JavSP.log 和 FileMove.log。"""
+    program_dir = _program_dir()
+    detail = logging.Formatter('%(asctime)s %(name)s:%(lineno)d %(levelname)s: %(message)s')
+    root_logger.setLevel(logging.DEBUG)
+    app_log = logging.FileHandler(os.path.join(program_dir, 'JavSP.log'), encoding='utf-8')
+    app_log.setLevel(logging.DEBUG)
+    app_log.setFormatter(detail)
+    root_logger.addHandler(app_log)
+
+    move_logger = logging.getLogger('filemove')
+    move_logger.setLevel(logging.DEBUG)
+    move_logger.propagate = False
+    move_log = logging.FileHandler(os.path.join(program_dir, 'FileMove.log'), encoding='utf-8')
+    move_log.setLevel(logging.DEBUG)
+    move_log.setFormatter(detail)
+    move_logger.addHandler(move_log)
+
+
+_setup_file_logging()
+
+
 from javsp.lib import resource_path
 from javsp.nfo import write_nfo
 from javsp.file import *
@@ -79,36 +108,45 @@ def import_crawlers():
 
 
 # 爬虫是IO密集型任务，可以通过多线程提升效率
+def crawl_with_retry(parser, info: MovieInfo, retry, crawler_name, tqdm_bar=None):
+    """执行一次抓取，并按错误类型决定重试或停止。"""
+    for cnt in range(retry):
+        try:
+            parser(info)
+            movie_id = info.dvdid or info.cid
+            logger.debug(f"{crawler_name}: 抓取成功: '{movie_id}': '{info.url}'")
+            setattr(info, 'success', True)
+            if isinstance(tqdm_bar, tqdm):
+                tqdm_bar.set_description(f'{crawler_name}: 抓取完成')
+            break
+        except MovieNotFoundError as e:
+            logger.debug(e)
+            break
+        except MovieDuplicateError as e:
+            logger.exception(e)
+            break
+        except (SiteBlocked, SitePermissionError, CredentialError, WebsiteError) as e:
+            logger.error(e)
+            break
+        except requests.exceptions.RequestException as e:
+            response = getattr(e, 'response', None)
+            status_code = response.status_code if response is not None else None
+            # 证书错误和明确拒绝不会因为原样重试而恢复
+            if isinstance(e, requests.exceptions.SSLError) or status_code in (400, 401, 403, 404, 410, 429):
+                logger.debug(f'{crawler_name}: {e}', exc_info=True)
+                break
+            logger.debug(f'{crawler_name}: 网络错误，正在重试 ({cnt+1}/{retry}): \n{repr(e)}')
+            if isinstance(tqdm_bar, tqdm):
+                tqdm_bar.set_description(f'{crawler_name}: 网络错误，正在重试')
+        except Exception as e:
+            logger.exception(e)
+
+
 def parallel_crawler(movie: Movie, tqdm_bar=None):
     """使用多线程抓取不同网站的数据"""
     def wrapper(parser, info: MovieInfo, retry):
         """对抓取器函数进行包装，便于更新提示信息和自动重试"""
-        crawler_name = threading.current_thread().name
-        task_info = f'Crawler: {crawler_name}: {info.dvdid}'
-        for cnt in range(retry):
-            try:
-                parser(info)
-                movie_id = info.dvdid or info.cid
-                logger.debug(f"{crawler_name}: 抓取成功: '{movie_id}': '{info.url}'")
-                setattr(info, 'success', True)
-                if isinstance(tqdm_bar, tqdm):
-                    tqdm_bar.set_description(f'{crawler_name}: 抓取完成')
-                break
-            except MovieNotFoundError as e:
-                logger.debug(e)
-                break
-            except MovieDuplicateError as e:
-                logger.exception(e)
-                break
-            except (SiteBlocked, SitePermissionError, CredentialError) as e:
-                logger.error(e)
-                break
-            except requests.exceptions.RequestException as e:
-                logger.debug(f'{crawler_name}: 网络错误，正在重试 ({cnt+1}/{retry}): \n{repr(e)}')
-                if isinstance(tqdm_bar, tqdm):
-                    tqdm_bar.set_description(f'{crawler_name}: 网络错误，正在重试')
-            except Exception as e:
-                logger.exception(e)
+        crawl_with_retry(parser, info, retry, threading.current_thread().name, tqdm_bar)
 
     # 根据影片的数据源获取对应的抓取器
     crawler_mods: List[CrawlerID] = Cfg().crawler.selection[movie.data_src]
@@ -438,11 +476,18 @@ def RunNormalMode(all_movies):
         total_step += 1
 
     return_movies = []
-    for movie in outer_bar:
+    total_count = len(all_movies)
+    for index, movie in enumerate(outer_bar, start=1):
+        label = movie.dvdid or movie.cid or '未知番号'
+        inner_bar = None
         try:
             # 初始化本次循环要整理影片任务
             filenames = [os.path.split(i)[1] for i in movie.files]
+            tqdm.write(f'{Fore.YELLOW}[{index}/{total_count}] 正在处理: {label}{Style.RESET_ALL}')
+            if filenames:
+                tqdm.write('  ' + '\n  '.join(filenames))
             logger.info('正在整理: ' + ', '.join(filenames))
+            outer_bar.set_description(f'正在处理 {label}')
             inner_bar = tqdm(total=total_step, desc='步骤', ascii=True, leave=False)
             # 依次执行各个步骤
             inner_bar.set_description(f'启动并发任务')
@@ -516,18 +561,24 @@ def RunNormalMode(all_movies):
                 inner_bar.set_description('移动影片文件')
                 movie.rename_files(Cfg().summarizer.path.hard_link)
                 check_step(True)
+                done_path = movie.save_dir
                 logger.info(f'整理完成，相关文件已保存到: {movie.save_dir}\n')
             else:
+                done_path = movie.nfo_file
                 logger.info(f'刮削完成，相关文件已保存到: {movie.nfo_file}\n')
+            tqdm.write(f'{Fore.GREEN}[{index}/{total_count}] 处理完成: {label}{Style.RESET_ALL}')
+            tqdm.write(f'  相关文件已保存到: {done_path}')
 
             if movie != all_movies[-1] and Cfg().crawler.sleep_after_scraping > Duration(0):
                 time.sleep(Cfg().crawler.sleep_after_scraping.total_seconds())
             return_movies.append(movie)
-        # except Exception as e:
-        #     logger.debug(e, exc_info=True)
-        #     logger.error(f'整理失败: {e}')
+        except Exception as e:
+            tqdm.write(f'{Fore.RED}[{index}/{total_count}] 处理失败: {label}{Style.RESET_ALL}')
+            tqdm.write(f'  {e}')
+            logger.error(f'整理失败: {label}: {e}', exc_info=True)
         finally:
-            inner_bar.close()
+            if inner_bar is not None:
+                inner_bar.close()
     return return_movies
 
 
@@ -614,6 +665,7 @@ def entry():
     movie_count = len(recognized)
     recognize_fail = []
     error_exit(movie_count, '未找到影片文件')
+    print(f'{Fore.RED}扫描影片文件：共找到 {movie_count} 部影片{Style.RESET_ALL}')
     logger.info(f'扫描影片文件：共找到 {movie_count} 部影片')
     if Cfg().scanner.manual:
         reviewMovieID(recognized, root)
@@ -622,4 +674,15 @@ def entry():
     sys.exit(0)
 
 if __name__ == "__main__":
-    entry()
+    try:
+        entry()
+    except SystemExit:
+        raise
+    except Exception:
+        logger.exception('程序异常退出')
+        print(f'{Fore.RED}程序异常退出，详情已写入 JavSP.log{Style.RESET_ALL}')
+        try:
+            input('按回车键关闭窗口...')
+        except EOFError:
+            pass
+        sys.exit(1)

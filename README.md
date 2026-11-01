@@ -14,8 +14,40 @@
 [![LICENSE](https://img.shields.io/badge/license-Anti%20996-blue.svg)](https://github.com/996icu/996.ICU/blob/master/LICENSE)
 ![Python 3.10](https://img.shields.io/badge/python-3.10-green.svg)
 [![Crawlers test](https://img.shields.io/github/actions/workflow/status/Yuukiy/JavSP/test-web-funcs.yml?label=crawlers%20test)](https://github.com/Yuukiy/JavSP/actions/workflows/test-web-funcs.yml)
-[![Latest release](https://img.shields.io/github/v/release/Yuukiy/JavSP)](https://github.com/Yuukiy/JavSP/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/Icodezhan/JavSP-Go)](https://github.com/Icodezhan/JavSP-Go/releases/latest)
 [![996.icu](https://img.shields.io/badge/link-996.icu-red.svg)](https://996.icu)
+
+本仓库基于 [Yuukiy/JavSP](https://github.com/Yuukiy/JavSP)，保留原有的文件整理、命名和 NFO 生成，升级了网络抓取层。Windows 发行包见 [Releases](https://github.com/Icodezhan/JavSP-Go/releases)。
+
+## 本仓库的升级
+
+### 抓取
+
+- JavBus 使用浏览器请求头。遇到年龄验证页时会提交确认；免代理镜像证书失败时改用官网。响应为空或确认后仍是验证页时，会明确提示站点拒绝。
+- JavDB 的搜索地址会去掉多余斜杠，免代理镜像证书失败时改用官网。需要登录的内容仍使用本机浏览器 Cookie。
+- jav321 在搜索结果为空时记为未找到影片。
+- 可选 CookieCloud。设置环境变量 `JAVSP_COOKIECLOUD_FILE` 指向 JSON 文件后，请求会附带对应域名的 Cookie。不设置时行为与原来一致。
+- 证书错误，以及 HTTP 400、401、403、404、410、429，不再重复重试。超时和连接失败仍按 `network.retry` 重试。
+- 一部影片抓取或整理失败时，会提示失败原因并继续处理下一部。
+
+Airav 在站点返回 521 时无法查询。JavLibrary 可能返回 403。MGStage 和 Prestige 的 403 仍表示当前网络地区不能访问。能打开的站点明确返回未找到时，表示该番号在这些站点没有资料。
+
+### 运行提示与日志
+
+- 扫描结束后，用红色显示「扫描影片文件：共找到 N 部影片」。
+- 每部开始时显示正在处理的番号和文件名，成功后显示保存位置，失败时显示原因。
+- 日志写在程序所在目录，不随扫描目录改变：`JavSP.log` 记录运行过程，`FileMove.log` 记录文件移动。
+
+### 默认配置
+
+配置文件是程序目录下的 `config.yml`。旧版 `config.ini` 不能直接读取，可以用 [tools/config_migration.py](./tools/config_migration.py) 转换。
+
+- `scanner.manual: no`：识别出番号后直接整理，不逐个停下来确认。
+- `summarizer.extra_fanarts.enabled: false`：默认不下载剧照。`extrafanart` 目录是剧照，横版封面仍是 `fanart.jpg`。
+- 扫描时忽略名为 `#手动整理` 的文件夹。
+
+Windows 发行包解压后是一个目录。请运行其中的 `JavSP.exe`，并保留同目录的 `python312.dll`、`lib`、`data` 和 `config.yml`。
+
 ## 功能特点
 
 下面这些是一些已实现或待实现的功能，在逐渐实现和完善，如果想到新的功能点也会加进来。
